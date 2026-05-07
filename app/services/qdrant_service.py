@@ -35,13 +35,22 @@ def ensure_collection():
         print(f"Qdrant collection already exists: {COLLECTION}")
 
 
+import hashlib
+
+def _generate_stable_id(product_id: str) -> int:
+    """Generate a stable 64-bit integer ID from a string."""
+    hash_obj = hashlib.sha256(product_id.encode())
+    # Take first 8 bytes for a 64-bit integer
+    return int.from_bytes(hash_obj.digest()[:8], byteorder="big") % (2**63)
+
+
 def upsert_embedding(product_id: str, embedding: list[float], metadata: dict):
     """Insert or update a product embedding in Qdrant."""
     client.upsert(
         collection_name=COLLECTION,
         points=[
             PointStruct(
-                id=abs(hash(product_id)) % (2**63),  # Qdrant needs integer ID
+                id=_generate_stable_id(product_id),
                 vector=embedding,
                 payload={"product_id": product_id, **metadata},
             )
@@ -81,5 +90,5 @@ def delete_embedding(product_id: str):
     """Remove a product embedding when product is deleted."""
     client.delete(
         collection_name=COLLECTION,
-        points_selector=[abs(hash(product_id)) % (2**63)],
+        points_selector=[_generate_stable_id(product_id)],
     )

@@ -9,14 +9,18 @@ Everystore AI Image Matching Microservice
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 
 from app.services.qdrant_service import ensure_collection
 from app.models.clip_model import get_model
 from app.routes import embedding, search, reindex, delete
 from app.middleware.auth import InternalAPIKeyMiddleware
 from app.schemas.requests import HealthResponse
+
+# Define the API Key header scheme for Swagger UI
+api_key_header = APIKeyHeader(name="X-Internal-API-Key", auto_error=False)
 
 
 @asynccontextmanager
@@ -47,6 +51,7 @@ app = FastAPI(
     ),
     version="1.0.0",
     lifespan=lifespan,
+    dependencies=[Depends(api_key_header)],
 )
 
 # Security: API key middleware

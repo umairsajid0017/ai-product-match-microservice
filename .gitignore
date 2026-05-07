@@ -22,3 +22,4 @@ __pycache__/
 *.webp
 qdrant_data/
 orig_images/
+test_qdrant_data/
