@@ -14,6 +14,7 @@ from qdrant_client.models import (
 
 from app.config import settings
 
+# Initialize Qdrant in Local Mode (stores data in a local folder)
 client = QdrantClient(path=settings.qdrant_path)
 
 COLLECTION = settings.qdrant_collection
@@ -57,12 +58,13 @@ def search_similar(embedding: list[float], top_k: int = 10) -> list[dict]:
     - score: float (cosine similarity, 0-1)
     - metadata: dict
     """
-    results = client.search(
+    # Use the newer query_points API which is more robust for local mode
+    results = client.query_points(
         collection_name=COLLECTION,
-        query_vector=embedding,
+        query=embedding,
         limit=top_k,
         with_payload=True,
-    )
+    ).points
 
     return [
         {
