@@ -21,3 +21,4 @@ __pycache__/
 *.png
 *.webp
 qdrant_data/
+orig_images/
