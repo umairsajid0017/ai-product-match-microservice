@@ -1,2 +1,23 @@
-app/__pycache__/__init__.cpython-314.pyc
-app/__pycache__/config.cpython-314.pyc
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment Variables
+.env
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Images (if any in current dir)
+*.jpg
+*.jpeg
+*.png
+*.webp
+qdrant_data/

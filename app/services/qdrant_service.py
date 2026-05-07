@@ -14,7 +14,7 @@ from qdrant_client.models import (
 
 from app.config import settings
 
-client = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
+client = QdrantClient(path=settings.qdrant_path)
 
 COLLECTION = settings.qdrant_collection
 VECTOR_SIZE = 512  # ViT-B/32 output dimension

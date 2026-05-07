@@ -12,10 +12,6 @@ Pillow>=10.3.0
 # Vector Database
 qdrant-client>=1.9.1
 
-# Task Queue
-redis>=5.0.4
-rq>=1.16.2
-
 # Utilities
 python-dotenv>=1.0.1
 pydantic>=2.7.1

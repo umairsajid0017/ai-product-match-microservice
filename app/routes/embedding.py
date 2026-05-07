@@ -9,21 +9,18 @@ This keeps the API response instant — heavy AI work happens in the worker.
 import json
 import os
 
-import redis
-from rq import Queue
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
 
 from app.config import settings
 from app.schemas.requests import EmbeddingResponse
+from app.workers.embedding_worker import process_from_bytes, process_from_path
 
 router = APIRouter()
-
-rq_client = redis.from_url(settings.redis_url)
-queue = Queue(connection=rq_client)
 
 
 @router.post("/products/embedding", status_code=202, response_model=EmbeddingResponse)
 async def create_embedding(
+    background_tasks: BackgroundTasks,
     product_id: str = Form(...),
     image_path: str = Form(None),
     image_file: UploadFile = File(None),
@@ -35,14 +32,14 @@ async def create_embedding(
     Provide either `image_path` (relative path in IMAGE_BASE_PATH)
     OR `image_file` (upload the image directly), not both.
 
-    The embedding is generated asynchronously by a background worker.
+    The embedding is generated asynchronously using FastAPI BackgroundTasks.
     """
     meta = json.loads(metadata)
 
     if image_file:
         image_bytes = await image_file.read()
-        queue.enqueue(
-            "app.workers.embedding_worker.process_from_bytes",
+        background_tasks.add_task(
+            process_from_bytes,
             product_id,
             image_bytes,
             meta,
@@ -51,8 +48,8 @@ async def create_embedding(
         full_path = os.path.join(settings.image_base_path, image_path)
         if not os.path.exists(full_path):
             raise HTTPException(400, f"Image not found: {image_path}")
-        queue.enqueue(
-            "app.workers.embedding_worker.process_from_path",
+        background_tasks.add_task(
+            process_from_path,
             product_id,
             full_path,
             meta,

@@ -8,13 +8,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8001
 
-    # Qdrant
-    qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
+    # Qdrant (Local Mode)
+    qdrant_path: str = "qdrant_data"
     qdrant_collection: str = "products"
-
-    # Redis
-    redis_url: str = "redis://localhost:6379/0"
 
     # Image Storage
     image_base_path: str = "../orig_images"

@@ -3,7 +3,7 @@ FastAPI application entry point.
 
 Everystore AI Image Matching Microservice
 - Loads CLIP model once on startup (singleton)
-- Ensures Qdrant collection exists
+- Ensures Qdrant collection exists (Local mode)
 - Registers all API routes and security middleware
 """
 
