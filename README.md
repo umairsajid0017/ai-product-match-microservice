@@ -1,48 +1,90 @@
-# Everystore — AI Image Matching Microservice (Zero-Dependency Version)
+# AI Image Matching Microservice
 
-Lightweight AI-assisted product matching system. Uses CLIP embeddings + Qdrant (Local Mode) to find visually similar products from a shopkeeper's photo.
+Most of the systems require this kind of system. A lightweight, zero-dependency AI-assisted image matching microservice designed to find visually similar items from uploaded images using advanced computer vision models.
 
-**This version requires NO Docker, NO Qdrant server, and NO Redis server.** Everything runs in a single Python process using local file storage.
+## About the project
+This Image Matching Microservice solves the problem of manual item identification and entry by allowing users to simply upload an image for comparison. It serves as a backend AI engine that generates image embeddings and performs rapid vector similarity searches. Designed with a strict "Zero-Dependency" architecture, it avoids heavy infrastructure (like Docker, Redis, or dedicated database servers) to minimize CPU usage, RAM consumption, and server costs while maintaining lightning-fast performance.
 
-## Architecture
+## Features
+- **Zero External Dependencies**: Runs entirely as a single Python process. No Docker, Redis, or Qdrant servers required.
+- **Fast Similarity Search**: Uses Qdrant Local Mode for sub-millisecond vector lookups directly on the filesystem.
+- **Persistent Crash Recovery**: Features a file-based task queue with atomic writes, ensuring no embedding jobs are lost if the server restarts.
+- **Zero-Downtime Reindexing**: Utilizes shadow collections to rebuild the entire database in the background while the live system continues to serve search requests uninterrupted.
+- **Smart Queue Management**: Includes pre-queue image validation, deduplication of indexing requests, and a dead-letter queue for corrupted files to prevent infinite retry loops.
+- **Clean Architecture**: Built with FastAPI using a modern MVC-style Controller architecture for easy maintenance.
 
-- **API**: FastAPI (Python 3.11+)
-- **AI Model**: OpenCLIP ViT-B/32 (512-dim embeddings)
-- **Vector DB**: Qdrant (Local Mode — stores vectors in `qdrant_data/` folder)
-- **Background Tasks**: FastAPI Native BackgroundTasks (No Redis needed)
-- **Storage**: Local filesystem (`../orig_images`)
-
-## Quick Start (Local Development)
-
-```bash
-# 1. Create and activate virtual environment
-python -m venv venv
-.\venv\Scripts\activate   # Windows
-
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Start the API server
-uvicorn app.main:app --port 8001 --reload
-
-# 4. Health check
-curl http://localhost:8001/health
-```
-
-## How it works (Simplified)
-1. **Offline Processing**: When a product is indexed (`POST /products/embedding`), the server generates the embedding and saves it to a local folder called `qdrant_data/`.
-2. **Online Search**: When a photo is uploaded for search, the server generates one embedding and does a lightning-fast lookup against the local files.
+## Requirements
+- **Runtime Environment**: Python >= 3.11
+- **Supported Platforms**: Windows, macOS, Linux (Standard Python environment)
+- **Hardware Considerations**: 
+  - Minimum 1GB available RAM (The OpenCLIP model requires ~600MB of RAM loaded in memory)
+  - Fast SSD recommended for optimal Qdrant Local Mode performance
 
 ## API Endpoints
+The system provides a clear set of endpoints for indexing, searching, and managing the background tasks:
 
-| Method | Endpoint                       | Purpose                          |
-|--------|--------------------------------|----------------------------------|
-| POST   | /products/embedding            | Index a new product image        |
-| POST   | /products/search-similar       | Search by photo                  |
-| POST   | /products/reindex              | Rebuild all embeddings           |
-| DELETE | /products/embedding/{id}       | Remove a product embedding       |
-| GET    | /health                        | Health check                     |
+### Core Endpoints
+- **`POST /products/embedding`**: Upload an image to generate its embedding and add it to the database for future searches.
+- **`POST /products/search-similar`**: Upload an image to find visually similar items already stored in the database.
+- **`DELETE /products/embedding/{product_id}`**: Remove an item from the database so it no longer appears in search results.
 
-## Environment Variables
+### System & Maintenance
+- **`POST /products/reindex`**: Start a background job to completely rebuild the database without affecting live search.
+- **`GET /products/reindex/status`**: Check the progress of an ongoing reindex job.
+- **`GET /health`**: A simple check to confirm the server is running and healthy.
 
-See `.env.example` for all available configuration options. (Note: Redis settings are no longer used).
+### Queue Management
+- **`GET /queue/status`**: View the number of pending or processing image tasks.
+- **`GET /queue/dead-letters`**: View tasks that permanently failed (e.g., due to corrupted images).
+- **`DELETE /queue/dead-letters`**: Clear out the list of permanently failed tasks.
+
+## Running the project
+
+### 1. Clone the repository
+```bash
+git clone <repository-url>
+cd product-match
+```
+
+### 2. Install dependencies
+It is highly recommended to use a virtual environment.
+```bash
+# Create virtual environment
+python -m venv venv
+
+# Activate it (Windows)
+.\venv\Scripts\activate
+# Activate it (macOS/Linux)
+source venv/bin/activate
+
+# Install required packages
+pip install -r requirements.txt
+```
+
+### 3. Run locally
+Start the FastAPI server using Uvicorn.
+```bash
+python -m uvicorn app.main:app --port 8001
+```
+
+### 4. Additional setup
+- **Environment Variables**: Copy the sample environment file to configure your paths and keys.
+  ```bash
+  cp .env.example .env
+  ```
+  Ensure you set `INTERNAL_API_KEY` for secure access and `IMAGE_BASE_PATH` to point to your local image directory.
+- **Database**: Qdrant Local Mode automatically creates and manages the `qdrant_data/` folder upon the first run. No manual initialization is required.
+
+### 5. Verify the application
+- **Swagger Documentation**: Open your browser and navigate to [http://localhost:8001/docs](http://localhost:8001/docs) to view and test all endpoints interactively.
+- **Health Check**: Run a quick status check in your terminal:
+  ```bash
+  curl http://localhost:8001/health
+  ```
+- **Queue Status**: Monitor the background task queue:
+  ```bash
+  curl http://localhost:8001/queue/status
+  ```
+
+---
+**Note for Windows Users:** You may occasionally see a harmless `ModuleNotFoundError: import of msvcrt halted` warning on shutdown. This is related to the internal file locking mechanism used by the local database and can be safely ignored.
