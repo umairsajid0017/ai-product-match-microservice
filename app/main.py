@@ -4,6 +4,7 @@ FastAPI application entry point.
 Everystore AI Image Matching Microservice
 - Loads CLIP model once on startup (singleton)
 - Ensures Qdrant collection exists (Local mode)
+- Recovers any interrupted tasks from the persistent queue
 - Registers all API routes and security middleware
 """
 
@@ -18,6 +19,8 @@ from app.models.clip_model import get_model
 from app.routes import embedding, search, reindex, delete
 from app.middleware.auth import InternalAPIKeyMiddleware
 from app.schemas.requests import HealthResponse
+from app.workers.embedding_worker import retry_pending_tasks
+from app.services.task_queue import get_queue_status
 
 # Define the API Key header scheme for Swagger UI
 api_key_header = APIKeyHeader(name="X-Internal-API-Key", auto_error=False)
@@ -31,12 +34,17 @@ async def lifespan(app: FastAPI):
     Startup:
     - Pre-loads CLIP model (~5-15s) so first request isn't slow
     - Ensures Qdrant collection exists
+    - Retries any tasks that were interrupted by a previous crash
 
     This is critical — cold-loading the model on first request causes timeouts.
     """
     print("Loading CLIP model...")
     get_model()
     ensure_collection()
+
+    # Recover interrupted tasks from persistent queue
+    retry_pending_tasks()
+
     print("AI Microservice ready.")
     yield
     # Shutdown: nothing needed
@@ -76,3 +84,9 @@ app.include_router(delete.router)
 async def health():
     """Health check endpoint for load balancers."""
     return HealthResponse(status="ok")
+
+
+@app.get("/queue/status")
+async def queue_status():
+    """Check the persistent task queue status."""
+    return get_queue_status()
