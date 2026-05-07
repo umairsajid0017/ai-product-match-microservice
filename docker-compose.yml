@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  ai-service:
+    build: .
+    ports:
+      - "8001:8001"
+    volumes:
+      - ../orig_images:/images:ro   # mount existing image dir read-only
+      - ./.env:/app/.env
+    environment:
+      - IMAGE_BASE_PATH=/images
+    depends_on:
+      - qdrant
+      - redis
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: rq worker --url redis://redis:6379
+    volumes:
+      - ../orig_images:/images:ro
+      - ./.env:/app/.env
+    environment:
+      - IMAGE_BASE_PATH=/images
+      - QDRANT_HOST=qdrant
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - qdrant
+      - redis
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
