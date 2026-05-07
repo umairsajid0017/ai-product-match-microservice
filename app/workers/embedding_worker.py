@@ -8,8 +8,11 @@ Each task is tracked in a file-based queue:
 1. Task is written to queue BEFORE processing starts
 2. Task is removed from queue AFTER successful completion
 3. If server crashes mid-task, the task remains in the queue
-4. On next startup, pending tasks are automatically retried
+4. On next startup, pending tasks are automatically retried (max 3 times)
+5. Permanently failed tasks are moved to a dead letter file
 """
+
+import os
 
 from app.services.embedding_service import (
     generate_embedding_from_path,
@@ -25,7 +28,7 @@ def process_from_path(product_id: str, image_path: str, metadata: dict):
 
     This runs asynchronously — product becomes searchable after completion.
     """
-    # 1. Write task to persistent queue
+    # 1. Write task to persistent queue (deduplication handled inside)
     task_id = enqueue_task("embed_path", product_id, image_path=image_path, metadata=metadata)
 
     try:
@@ -38,7 +41,7 @@ def process_from_path(product_id: str, image_path: str, metadata: dict):
         complete_task(task_id)
 
     except Exception as e:
-        # Task stays in queue for retry on next startup
+        # Task stays in queue for retry on next startup (up to MAX_RETRIES)
         fail_task(task_id, str(e))
         print(f"[Worker] Failed to index {product_id}: {e}")
 
@@ -47,15 +50,13 @@ def process_from_bytes(product_id: str, image_bytes: bytes, metadata: dict):
     """
     Worker job: use uploaded bytes directly to generate embedding.
 
-    Note: For byte uploads, we save the bytes to a temp file first so
-    the task can be retried from disk if the server crashes.
+    Saves the bytes to a temp file first so the task can be retried
+    from disk if the server crashes.
     """
-    import os
-    import tempfile
     from app.config import settings
 
     # Save uploaded bytes to a temp file for crash recovery
-    temp_dir = os.path.join(settings.qdrant_path, "..", "task_queue", "uploads")
+    temp_dir = os.path.join("task_queue", "uploads")
     os.makedirs(temp_dir, exist_ok=True)
     temp_path = os.path.join(temp_dir, f"{product_id}.tmp.jpg")
 
@@ -77,7 +78,7 @@ def process_from_bytes(product_id: str, image_bytes: bytes, metadata: dict):
             os.remove(temp_path)
 
     except Exception as e:
-        # Task stays in queue for retry on next startup
+        # Task stays in queue for retry on next startup (up to MAX_RETRIES)
         fail_task(task_id, str(e))
         print(f"[Worker] Failed {product_id}: {e}")
 
@@ -86,6 +87,9 @@ def retry_pending_tasks():
     """
     Called on server startup to retry any tasks that were
     interrupted by a crash or shutdown.
+
+    Tasks that exceed MAX_RETRIES are automatically moved to the
+    dead letter queue by fail_task().
     """
     from app.services.task_queue import get_pending_tasks
 
@@ -101,6 +105,9 @@ def retry_pending_tasks():
         product_id = task["product_id"]
         image_path = task.get("image_path")
         metadata = task.get("metadata", {})
+        retries = task.get("retries", 0)
+
+        print(f"[Recovery] Retrying {product_id} (attempt {retries + 1}/3)")
 
         if not image_path or not os.path.exists(image_path):
             print(f"[Recovery] Skipping {task_id}: image file not found ({image_path})")
@@ -114,13 +121,9 @@ def retry_pending_tasks():
             print(f"[Recovery] Successfully recovered {product_id}")
 
             # Clean up temp uploads after recovery
-            if image_path and "uploads" in image_path and os.path.exists(image_path):
+            if "uploads" in image_path and os.path.exists(image_path):
                 os.remove(image_path)
 
         except Exception as e:
             fail_task(task_id, str(e))
             print(f"[Recovery] Failed to recover {product_id}: {e}")
-
-
-# Need os for retry_pending_tasks
-import os

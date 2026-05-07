@@ -5,7 +5,7 @@ Everystore AI Image Matching Microservice
 - Loads CLIP model once on startup (singleton)
 - Ensures Qdrant collection exists (Local mode)
 - Recovers any interrupted tasks from the persistent queue
-- Registers all API routes and security middleware
+- Registers all API routes (from api.py) and security middleware
 """
 
 from contextlib import asynccontextmanager
@@ -16,11 +16,9 @@ from fastapi.security import APIKeyHeader
 
 from app.services.qdrant_service import ensure_collection
 from app.models.clip_model import get_model
-from app.routes import embedding, search, reindex, delete
+from app import api
 from app.middleware.auth import InternalAPIKeyMiddleware
-from app.schemas.requests import HealthResponse
 from app.workers.embedding_worker import retry_pending_tasks
-from app.services.task_queue import get_queue_status
 
 # Define the API Key header scheme for Swagger UI
 api_key_header = APIKeyHeader(name="X-Internal-API-Key", auto_error=False)
@@ -30,13 +28,6 @@ api_key_header = APIKeyHeader(name="X-Internal-API-Key", auto_error=False)
 async def lifespan(app: FastAPI):
     """
     Startup/shutdown lifecycle.
-
-    Startup:
-    - Pre-loads CLIP model (~5-15s) so first request isn't slow
-    - Ensures Qdrant collection exists
-    - Retries any tasks that were interrupted by a previous crash
-
-    This is critical — cold-loading the model on first request causes timeouts.
     """
     print("Loading CLIP model...")
     get_model()
@@ -47,7 +38,6 @@ async def lifespan(app: FastAPI):
 
     print("AI Microservice ready.")
     yield
-    # Shutdown: nothing needed
     print("AI Microservice shutting down.")
 
 
@@ -57,7 +47,7 @@ app = FastAPI(
         "Lightweight AI-assisted product matching microservice. "
         "Generates CLIP embeddings and performs vector similarity search."
     ),
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
     dependencies=[Depends(api_key_header)],
 )
@@ -65,28 +55,13 @@ app = FastAPI(
 # Security: API key middleware
 app.add_middleware(InternalAPIKeyMiddleware)
 
-# CORS: restrict to your Laravel backend
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: restrict to your Laravel backend URL in production
+    allow_origins=["*"],
     allow_methods=["POST", "DELETE", "GET"],
     allow_headers=["*"],
 )
 
-# Register routes
-app.include_router(embedding.router)
-app.include_router(search.router)
-app.include_router(reindex.router)
-app.include_router(delete.router)
-
-
-@app.get("/health", response_model=HealthResponse)
-async def health():
-    """Health check endpoint for load balancers."""
-    return HealthResponse(status="ok")
-
-
-@app.get("/queue/status")
-async def queue_status():
-    """Check the persistent task queue status."""
-    return get_queue_status()
+# Register the central API router
+app.include_router(api.router)
