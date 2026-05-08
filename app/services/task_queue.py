@@ -70,7 +70,7 @@ def _write_queue(tasks: list[dict]):
 
 
 def enqueue_task(task_type: str, product_id: str, image_path: str | None = None,
-                 metadata: dict | None = None) -> str:
+                 image_url: str | None = None, metadata: dict | None = None) -> str:
     """
     Add a task to the persistent queue.
 
@@ -86,6 +86,7 @@ def enqueue_task(task_type: str, product_id: str, image_path: str | None = None,
         "task_type": task_type,
         "product_id": product_id,
         "image_path": image_path,
+        "image_url": image_url,
         "metadata": metadata or {},
         "created_at": time.time(),
         "status": "pending",

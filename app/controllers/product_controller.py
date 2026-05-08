@@ -12,7 +12,7 @@ from app.config import settings
 from app.services.image_service import validate_image_bytes, validate_image_path
 from app.services.embedding_service import generate_embedding_from_bytes
 from app.services.qdrant_service import search_similar, delete_embedding
-from app.workers.embedding_worker import process_from_bytes, process_from_path
+from app.workers.embedding_worker import process_from_bytes, process_from_path, process_from_url
 from app.schemas.requests import EmbeddingResponse, SearchResponse, DeleteResponse
 
 
@@ -48,19 +48,29 @@ async def create_embedding(
             meta,
         )
     elif image_path:
-        full_path = os.path.join(settings.image_base_path, image_path)
+        # Detect if it's a URL
+        if image_path.startswith(("http://", "https://")):
+            background_tasks.add_task(
+                process_from_url,
+                product_id,
+                image_path,
+                meta,
+            )
+        else:
+            # Handle as local path
+            full_path = os.path.join(settings.image_base_path, image_path)
 
-        try:
-            validate_image_path(full_path)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
+            try:
+                validate_image_path(full_path)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
 
-        background_tasks.add_task(
-            process_from_path,
-            product_id,
-            full_path,
-            meta,
-        )
+            background_tasks.add_task(
+                process_from_path,
+                product_id,
+                full_path,
+                meta,
+            )
     else:
         raise HTTPException(400, "Provide image_path or image_file")
 

@@ -13,6 +13,9 @@ Each task is tracked in a file-based queue:
 """
 
 import os
+import httpx
+import io
+from PIL import Image
 
 from app.services.embedding_service import (
     generate_embedding_from_path,
@@ -83,13 +86,48 @@ def process_from_bytes(product_id: str, image_bytes: bytes, metadata: dict):
         print(f"[Worker] Failed {product_id}: {e}")
 
 
+def process_from_url(product_id: str, image_url: str, metadata: dict):
+    """
+    Worker job: download image from URL, generate embedding, store in Qdrant.
+
+    Downloads the image to a temp file for persistence/recovery.
+    """
+    # 1. Write task to persistent queue
+    task_id = enqueue_task("embed_url", product_id, image_url=image_url, metadata=metadata)
+
+    try:
+        # 2. Download image
+        print(f"[Worker] Downloading image for {product_id} from {image_url}...")
+        response = httpx.get(image_url, timeout=30.0, follow_redirects=True)
+        response.raise_for_status()
+        image_bytes = response.content
+
+        # Save to temp file for crash recovery (so we don't redownload on retry if we got this far)
+        temp_dir = os.path.join("task_queue", "uploads")
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_path = os.path.join(temp_dir, f"url_{product_id}.jpg")
+        with open(temp_path, "wb") as f:
+            f.write(image_bytes)
+
+        # 3. Generate embedding
+        embedding = generate_embedding_from_bytes(image_bytes)
+        upsert_embedding(product_id, embedding, metadata)
+        print(f"[Worker] Indexed {product_id} from URL {image_url}")
+
+        # 4. Mark task as done and clean up
+        complete_task(task_id)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    except Exception as e:
+        fail_task(task_id, str(e))
+        print(f"[Worker] Failed {product_id} from URL: {e}")
+
+
 def retry_pending_tasks():
     """
     Called on server startup to retry any tasks that were
     interrupted by a crash or shutdown.
-
-    Tasks that exceed MAX_RETRIES are automatically moved to the
-    dead letter queue by fail_task().
     """
     from app.services.task_queue import get_pending_tasks
 
@@ -103,25 +141,38 @@ def retry_pending_tasks():
     for task in pending:
         task_id = task["task_id"]
         product_id = task["product_id"]
+        task_type = task.get("task_type", "embed_path")
         image_path = task.get("image_path")
+        image_url = task.get("image_url")
         metadata = task.get("metadata", {})
         retries = task.get("retries", 0)
 
-        print(f"[Recovery] Retrying {product_id} (attempt {retries + 1}/3)")
-
-        if not image_path or not os.path.exists(image_path):
-            print(f"[Recovery] Skipping {task_id}: image file not found ({image_path})")
-            fail_task(task_id, "Image file not found during recovery")
-            continue
+        print(f"[Recovery] Retrying {product_id} ({task_type}, attempt {retries + 1}/3)")
 
         try:
-            embedding = generate_embedding_from_path(image_path)
+            if task_type == "embed_url" and image_url:
+                # If it's a URL, we try to redownload (unless it was already saved to image_path)
+                if image_path and os.path.exists(image_path):
+                    embedding = generate_embedding_from_path(image_path)
+                else:
+                    response = httpx.get(image_url, timeout=30.0, follow_redirects=True)
+                    response.raise_for_status()
+                    embedding = generate_embedding_from_bytes(response.content)
+            
+            elif image_path and os.path.exists(image_path):
+                embedding = generate_embedding_from_path(image_path)
+            
+            else:
+                print(f"[Recovery] Skipping {task_id}: no valid source found")
+                fail_task(task_id, "No valid image source found during recovery")
+                continue
+
             upsert_embedding(product_id, embedding, metadata)
             complete_task(task_id)
             print(f"[Recovery] Successfully recovered {product_id}")
 
-            # Clean up temp uploads after recovery
-            if "uploads" in image_path and os.path.exists(image_path):
+            # Clean up temp uploads
+            if image_path and "uploads" in image_path and os.path.exists(image_path):
                 os.remove(image_path)
 
         except Exception as e:
