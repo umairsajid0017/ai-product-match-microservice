@@ -24,3 +24,4 @@ qdrant_data/
 orig_images/
 test_qdrant_data/
 task_queue/
+.env
