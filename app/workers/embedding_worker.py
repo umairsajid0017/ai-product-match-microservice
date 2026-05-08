@@ -65,7 +65,7 @@ def process_from_path(product_id: str, image_path: str, metadata: dict):
     try:
         # 2. Do the heavy AI work
         embedding = generate_embedding_from_path(image_path)
-        upsert_embedding(product_id, embedding, metadata)
+        upsert_embedding(str(product_id), embedding, metadata)
         print(f"[Worker] Indexed {product_id} from {image_path}")
 
         # 3. Mark task as done (removes from queue)
@@ -101,7 +101,7 @@ def process_from_bytes(product_id: str, image_bytes: bytes, metadata: dict):
     try:
         # 2. Do the heavy AI work
         embedding = generate_embedding_from_bytes(image_bytes)
-        upsert_embedding(product_id, embedding, metadata)
+        upsert_embedding(str(product_id), embedding, metadata)
         print(f"[Worker] Indexed {product_id} from uploaded bytes")
 
         # 3. Mark task as done and clean up temp file
@@ -142,7 +142,7 @@ def process_from_url(product_id: str, image_url: str, metadata: dict):
 
         # 3. Generate embedding
         embedding = generate_embedding_from_bytes(image_bytes)
-        upsert_embedding(product_id, embedding, metadata)
+        upsert_embedding(str(product_id), embedding, metadata)
         print(f"[Worker] Indexed {product_id} from URL {image_url}")
 
         # 4. Mark task as done and clean up
@@ -200,7 +200,7 @@ def retry_pending_tasks():
                 fail_task(task_id, "No valid image source found during recovery")
                 continue
 
-            upsert_embedding(product_id, embedding, metadata)
+            upsert_embedding(str(product_id), embedding, metadata)
             complete_task(task_id)
             notify_laravel_callback(product_id, "INDEXED")
             print(f"[Recovery] Successfully recovered {product_id}")

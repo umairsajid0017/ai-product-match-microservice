@@ -115,7 +115,7 @@ def _reindex_task():
 
         try:
             embedding = generate_embedding_from_path(full_path)
-            upsert_embedding(product_id, embedding, {}, collection_name=SHADOW_COLLECTION)
+            upsert_embedding(str(product_id), embedding, {}, collection_name=SHADOW_COLLECTION)
             _update_state(processed=_reindex_state["processed"] + 1)
         except Exception:
             _update_state(failed=_reindex_state["failed"] + 1)

@@ -87,7 +87,7 @@ def search_similar(embedding: list[float], top_k: int = 10) -> list[dict]:
 
     return [
         {
-            "product_id": r.payload.get("product_id"),
+            "product_id": str(r.payload.get("product_id")),
             "score": r.score,
             "metadata": r.payload,
         }
