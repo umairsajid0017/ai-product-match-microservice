@@ -23,6 +23,34 @@ from app.services.embedding_service import (
 )
 from app.services.qdrant_service import upsert_embedding
 from app.services.task_queue import enqueue_task, complete_task, fail_task
+from app.config import settings
+
+
+def notify_laravel_callback(product_id: str, status: str):
+    """
+    Send a webhook notification to the Laravel backend when a product
+    has been successfully indexed or has permanently failed.
+
+    This is fire-and-forget — failures here should never block the worker.
+    """
+    callback_url = settings.laravel_callback_url
+    if not callback_url:
+        return
+
+    try:
+        response = httpx.post(
+            callback_url,
+            json={"product_id": str(product_id), "status": status},
+            headers={
+                "X-Internal-API-Key": settings.internal_api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            timeout=10.0,
+        )
+        print(f"[Callback] Notified Laravel: product {product_id} -> {status} (HTTP {response.status_code})")
+    except Exception as e:
+        print(f"[Callback] Failed to notify Laravel for product {product_id}: {e}")
 
 
 def process_from_path(product_id: str, image_path: str, metadata: dict):
@@ -42,10 +70,12 @@ def process_from_path(product_id: str, image_path: str, metadata: dict):
 
         # 3. Mark task as done (removes from queue)
         complete_task(task_id)
+        notify_laravel_callback(product_id, "INDEXED")
 
     except Exception as e:
         # Task stays in queue for retry on next startup (up to MAX_RETRIES)
         fail_task(task_id, str(e))
+        notify_laravel_callback(product_id, "FAILED")
         print(f"[Worker] Failed to index {product_id}: {e}")
 
 
@@ -56,7 +86,6 @@ def process_from_bytes(product_id: str, image_bytes: bytes, metadata: dict):
     Saves the bytes to a temp file first so the task can be retried
     from disk if the server crashes.
     """
-    from app.config import settings
 
     # Save uploaded bytes to a temp file for crash recovery
     temp_dir = os.path.join("task_queue", "uploads")
@@ -77,12 +106,14 @@ def process_from_bytes(product_id: str, image_bytes: bytes, metadata: dict):
 
         # 3. Mark task as done and clean up temp file
         complete_task(task_id)
+        notify_laravel_callback(product_id, "INDEXED")
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
     except Exception as e:
         # Task stays in queue for retry on next startup (up to MAX_RETRIES)
         fail_task(task_id, str(e))
+        notify_laravel_callback(product_id, "FAILED")
         print(f"[Worker] Failed {product_id}: {e}")
 
 
@@ -116,11 +147,13 @@ def process_from_url(product_id: str, image_url: str, metadata: dict):
 
         # 4. Mark task as done and clean up
         complete_task(task_id)
+        notify_laravel_callback(product_id, "INDEXED")
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
     except Exception as e:
         fail_task(task_id, str(e))
+        notify_laravel_callback(product_id, "FAILED")
         print(f"[Worker] Failed {product_id} from URL: {e}")
 
 
@@ -169,6 +202,7 @@ def retry_pending_tasks():
 
             upsert_embedding(product_id, embedding, metadata)
             complete_task(task_id)
+            notify_laravel_callback(product_id, "INDEXED")
             print(f"[Recovery] Successfully recovered {product_id}")
 
             # Clean up temp uploads
@@ -177,4 +211,5 @@ def retry_pending_tasks():
 
         except Exception as e:
             fail_task(task_id, str(e))
+            notify_laravel_callback(product_id, "FAILED")
             print(f"[Recovery] Failed to recover {product_id}: {e}")

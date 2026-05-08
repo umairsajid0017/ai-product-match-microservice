@@ -25,6 +25,7 @@ class Settings(BaseSettings):
 
     # Security
     internal_api_key: str = ""
+    laravel_callback_url: str = "https://everystore.pk/backend/api/internal/ai-matching/callback"
 
     class Config:
         env_file = ".env"

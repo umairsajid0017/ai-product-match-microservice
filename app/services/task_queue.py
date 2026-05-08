@@ -150,10 +150,12 @@ def fail_task(task_id: str, error: str):
             _write_file(DEAD_LETTER_FILE, dead_letters)
 
             print(f"[Queue] Task {task_id} moved to dead letter after {MAX_RETRIES} retries: {error}")
+            return True
         else:
             _write_queue(tasks)
             retries = task_to_fail["retries"] if task_to_fail else "?"
             print(f"[Queue] Task {task_id} failed (retry {retries}/{MAX_RETRIES}): {error}")
+            return False
 
 
 def get_pending_tasks() -> list[dict]:
