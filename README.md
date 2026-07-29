@@ -1,90 +1,97 @@
-# AI Image Matching Microservice
+# AI Image Matching Microservice (product-match)
 
-Most of the systems require this kind of system. A lightweight, zero-dependency AI-assisted image matching microservice designed to find visually similar items from uploaded images using advanced computer vision models.
+Everystore visual product similarity: **OpenCLIP** embeddings + **vector search**.
 
-## About the project
-This Image Matching Microservice solves the problem of manual item identification and entry by allowing users to simply upload an image for comparison. It serves as a backend AI engine that generates image embeddings and performs rapid vector similarity searches. Designed with a strict "Zero-Dependency" architecture, it avoids heavy infrastructure (like Docker, Redis, or dedicated database servers) to minimize CPU usage, RAM consumption, and server costs while maintaining lightning-fast performance.
+**Production** runs on **AWS Lambda + API Gateway** with **Neon pgvector**, **SQS**, and optional **S3** staging. Laravel on Lightsail calls the public API.
+
+Full architecture (local vs remote, Neon/S3 separation, what’s left): **[DEPLOY_AWS.md](DEPLOY_AWS.md)**
+
+## Live API
+
+```
+https://0y6bdqfbmd.execute-api.ap-south-1.amazonaws.com
+```
+
+Auth: header `X-Internal-API-Key` (same as Laravel `PRODUCT_MATCH_API_KEY`).
 
 ## Features
-- **Zero External Dependencies**: Runs entirely as a single Python process. No Docker, Redis, or Qdrant servers required.
-- **Fast Similarity Search**: Uses Qdrant Local Mode for sub-millisecond vector lookups directly on the filesystem.
-- **Persistent Crash Recovery**: Features a file-based task queue with atomic writes, ensuring no embedding jobs are lost if the server restarts.
-- **Zero-Downtime Reindexing**: Utilizes shadow collections to rebuild the entire database in the background while the live system continues to serve search requests uninterrupted.
-- **Smart Queue Management**: Includes pre-queue image validation, deduplication of indexing requests, and a dead-letter queue for corrupted files to prevent infinite retry loops.
-- **Clean Architecture**: Built with FastAPI using a modern MVC-style Controller architecture for easy maintenance.
+
+- Image embed + cosine similarity search (ViT-B-32, 512-d)
+- Async indexing via SQS (production) or FastAPI BackgroundTasks (local)
+- Laravel webhook callback (`INDEXED` / `FAILED`)
+- Admin queue / dead-letter endpoints (SQS-backed in prod)
+
+## API endpoints
+
+### Core
+
+| Method | Path | Notes |
+|--------|------|--------|
+| `POST` | `/products/embedding` | Queue embed (`product_id` + `image_path` URL or `image_file`) → 202 |
+| `POST` | `/products/search-similar` | Sync search (multipart `image_file`) |
+| `DELETE` | `/products/embedding/{product_id}` | Remove vector |
+
+### System
+
+| Method | Path |
+|--------|------|
+| `GET` | `/health` |
+| `POST` | `/products/reindex` |
+| `GET` | `/products/reindex/status` |
+| `GET` | `/queue/status` |
+| `GET` / `DELETE` | `/queue/dead-letters` |
+
+Swagger (local): [http://localhost:8001/docs](http://localhost:8001/docs)
+
+## Local vs remote (short)
+
+| Concern | Local | Production |
+|---------|--------|------------|
+| Process | `uvicorn` on your machine | Lambda containers (API / Search / Worker) |
+| Vectors | Neon via `DATABASE_URL` (recommended) | **Neon pgvector** (separate from Lightsail) |
+| Job queue | In-process BackgroundTasks | **SQS** (+ DLQ) |
+| Multipart uploads | Optional | Staged to **S3** (separate bucket), then Worker |
+| Product images | Local path or HTTPS URL | **CDN / R2** URLs from Laravel |
+| Laravel | Optional callback | Lightsail + PM2 `ai-matching` worker |
+
+Neon (vectors) and S3 (temp uploads) are **separate remote services** — not stored on the Laravel VM or inside Lambda `/tmp` permanently.
 
 ## Requirements
-- **Runtime Environment**: Python >= 3.11
-- **Supported Platforms**: Windows, macOS, Linux (Standard Python environment)
-- **Hardware Considerations**: 
-  - Minimum 1GB available RAM (The OpenCLIP model requires ~600MB of RAM loaded in memory)
-  - Fast SSD recommended for optimal Qdrant Local Mode performance
 
-## API Endpoints
-The system provides a clear set of endpoints for indexing, searching, and managing the background tasks:
+- Python >= 3.11
+- ~1GB+ RAM for CLIP locally
+- `DATABASE_URL` pointing at Neon with `pgvector`
 
-### Core Endpoints
-- **`POST /products/embedding`**: Upload an image to generate its embedding and add it to the database for future searches.
-- **`POST /products/search-similar`**: Upload an image to find visually similar items already stored in the database.
-- **`DELETE /products/embedding/{product_id}`**: Remove an item from the database so it no longer appears in search results.
+## Run locally
 
-### System & Maintenance
-- **`POST /products/reindex`**: Start a background job to completely rebuild the database without affecting live search.
-- **`GET /products/reindex/status`**: Check the progress of an ongoing reindex job.
-- **`GET /health`**: A simple check to confirm the server is running and healthy.
-
-### Queue Management
-- **`GET /queue/status`**: View the number of pending or processing image tasks.
-- **`GET /queue/dead-letters`**: View tasks that permanently failed (e.g., due to corrupted images).
-- **`DELETE /queue/dead-letters`**: Clear out the list of permanently failed tasks.
-
-## Running the project
-
-### 1. Clone the repository
 ```bash
-git clone <repository-url>
-cd product-match
-```
-
-### 2. Install dependencies
-It is highly recommended to use a virtual environment.
-```bash
-# Create virtual environment
 python -m venv venv
-
-# Activate it (Windows)
-.\venv\Scripts\activate
-# Activate it (macOS/Linux)
-source venv/bin/activate
-
-# Install required packages
+# Windows: .\venv\Scripts\activate
+# macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
+pip install torch torchvision open-clip-torch
+
+cp .env.example .env
+# set DATABASE_URL, INTERNAL_API_KEY
+python infra/run_migration.py
+
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
-### 3. Run locally
-Start the FastAPI server using Uvicorn.
+Leave `SQS_QUEUE_URL` empty for local BackgroundTasks mode.
+
 ```bash
-python -m uvicorn app.main:app --port 8001
+curl http://localhost:8001/health
 ```
 
-### 4. Additional setup
-- **Environment Variables**: Copy the sample environment file to configure your paths and keys.
-  ```bash
-  cp .env.example .env
-  ```
-  Ensure you set `INTERNAL_API_KEY` for secure access and `IMAGE_BASE_PATH` to point to your local image directory.
-- **Database**: Qdrant Local Mode automatically creates and manages the `qdrant_data/` folder upon the first run. No manual initialization is required.
+## Deploy (AWS)
 
-### 5. Verify the application
-- **Swagger Documentation**: Open your browser and navigate to [http://localhost:8001/docs](http://localhost:8001/docs) to view and test all endpoints interactively.
-- **Health Check**: Run a quick status check in your terminal:
-  ```bash
-  curl http://localhost:8001/health
-  ```
-- **Queue Status**: Monitor the background task queue:
-  ```bash
-  curl http://localhost:8001/queue/status
-  ```
+See **[DEPLOY_AWS.md](DEPLOY_AWS.md)**. Summary:
 
----
-**Note for Windows Users:** You may occasionally see a harmless `ModuleNotFoundError: import of msvcrt halted` warning on shutdown. This is related to the internal file locking mechanism used by the local database and can be safely ignored.
+```powershell
+$env:DATABASE_URL = 'postgresql://...@...neon.tech/...?sslmode=require'
+$env:INTERNAL_API_KEY = '...'
+.\infra\deploy.ps1
+```
+
+Stack: `everystore-product-match` · region `ap-south-1`.
