@@ -2,14 +2,11 @@
 Embedding generation service.
 
 All functions produce a 512-dimensional normalized float vector
-from a product image. The embedding is generated ONCE per product
-and stored in Qdrant for reuse.
+from a product image. Torch is imported lazily for light Lambda cold starts.
 """
 
 import io
 
-import torch
-import numpy as np
 from PIL import Image
 
 from app.models.clip_model import get_model
@@ -33,6 +30,8 @@ def generate_embedding_from_image(image: Image.Image) -> list[float]:
 
     Returns a 512-dimensional float list (for ViT-B/32).
     """
+    import torch
+
     model, preprocess, _ = get_model()
     device = next(model.parameters()).device
 
@@ -40,6 +39,6 @@ def generate_embedding_from_image(image: Image.Image) -> list[float]:
 
     with torch.no_grad():
         features = model.encode_image(tensor)
-        features = features / features.norm(dim=-1, keepdim=True)  # L2 normalize
+        features = features / features.norm(dim=-1, keepdim=True)
 
     return features.cpu().numpy().flatten().tolist()

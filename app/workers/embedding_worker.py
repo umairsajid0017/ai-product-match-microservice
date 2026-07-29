@@ -1,38 +1,28 @@
 """
-Background worker for embedding generation with persistent queue support.
+Background / worker embedding processing.
 
-All heavy AI work (loading images, generating CLIP embeddings)
-runs here asynchronously, never blocking API responses.
-
-Each task is tracked in a file-based queue:
-1. Task is written to queue BEFORE processing starts
-2. Task is removed from queue AFTER successful completion
-3. If server crashes mid-task, the task remains in the queue
-4. On next startup, pending tasks are automatically retried (max 3 times)
-5. Permanently failed tasks are moved to a dead letter file
+On Lambda: SQS Worker invokes process_task().
+Locally: BackgroundTasks can still call process_from_* helpers.
 """
 
-import os
-import httpx
-import io
-from PIL import Image
+from __future__ import annotations
 
-from app.services.embedding_service import (
-    generate_embedding_from_path,
-    generate_embedding_from_bytes,
-)
-from app.services.qdrant_service import upsert_embedding
-from app.services.task_queue import enqueue_task, complete_task, fail_task
+import base64
+import os
+
+import httpx
+
 from app.config import settings
+from app.services.embedding_service import (
+    generate_embedding_from_bytes,
+    generate_embedding_from_path,
+)
+from app.services.pgvector_service import upsert_embedding
+from app.services import sqs_queue
 
 
 def notify_laravel_callback(product_id: str, status: str):
-    """
-    Send a webhook notification to the Laravel backend when a product
-    has been successfully indexed or has permanently failed.
-
-    This is fire-and-forget — failures here should never block the worker.
-    """
+    """Fire-and-forget INDEXED/FAILED webhook to Laravel."""
     callback_url = settings.laravel_callback_url
     if not callback_url:
         return
@@ -48,168 +38,119 @@ def notify_laravel_callback(product_id: str, status: str):
             },
             timeout=10.0,
         )
-        print(f"[Callback] Notified Laravel: product {product_id} -> {status} (HTTP {response.status_code})")
+        print(
+            f"[Callback] Notified Laravel: product {product_id} -> {status} "
+            f"(HTTP {response.status_code})"
+        )
     except Exception as e:
         print(f"[Callback] Failed to notify Laravel for product {product_id}: {e}")
 
 
+def _index(
+    product_id: str,
+    embedding: list[float],
+    metadata: dict,
+    image_url: str | None = None,
+):
+    meta = dict(metadata or {})
+    if image_url:
+        meta["image_url"] = image_url
+    upsert_embedding(str(product_id), embedding, meta, image_url=image_url)
+
+
 def process_from_path(product_id: str, image_path: str, metadata: dict):
-    """
-    Worker job: load image from disk, generate embedding, store in Qdrant.
-
-    This runs asynchronously — product becomes searchable after completion.
-    """
-    # 1. Write task to persistent queue (deduplication handled inside)
-    task_id = enqueue_task("embed_path", product_id, image_path=image_path, metadata=metadata)
-
+    """Local-path embedding (dev / optional)."""
     try:
-        # 2. Do the heavy AI work
         embedding = generate_embedding_from_path(image_path)
-        upsert_embedding(str(product_id), embedding, metadata)
+        _index(product_id, embedding, metadata)
         print(f"[Worker] Indexed {product_id} from {image_path}")
-
-        # 3. Mark task as done (removes from queue)
-        complete_task(task_id)
         notify_laravel_callback(product_id, "INDEXED")
-
     except Exception as e:
-        # Task stays in queue for retry on next startup (up to MAX_RETRIES)
-        fail_task(task_id, str(e))
         notify_laravel_callback(product_id, "FAILED")
         print(f"[Worker] Failed to index {product_id}: {e}")
+        raise
 
 
-def process_from_bytes(product_id: str, image_bytes: bytes, metadata: dict):
-    """
-    Worker job: use uploaded bytes directly to generate embedding.
-
-    Saves the bytes to a temp file first so the task can be retried
-    from disk if the server crashes.
-    """
-
-    # Save uploaded bytes to a temp file for crash recovery
-    temp_dir = os.path.join("task_queue", "uploads")
-    os.makedirs(temp_dir, exist_ok=True)
-    temp_path = os.path.join(temp_dir, f"{product_id}.tmp.jpg")
-
-    with open(temp_path, "wb") as f:
-        f.write(image_bytes)
-
-    # 1. Write task to persistent queue (with the saved file path)
-    task_id = enqueue_task("embed_path", product_id, image_path=temp_path, metadata=metadata)
-
+def process_from_bytes(
+    product_id: str,
+    image_bytes: bytes,
+    metadata: dict,
+    image_url: str | None = None,
+):
+    """Embed from raw bytes."""
     try:
-        # 2. Do the heavy AI work
         embedding = generate_embedding_from_bytes(image_bytes)
-        upsert_embedding(str(product_id), embedding, metadata)
-        print(f"[Worker] Indexed {product_id} from uploaded bytes")
-
-        # 3. Mark task as done and clean up temp file
-        complete_task(task_id)
+        _index(product_id, embedding, metadata, image_url=image_url)
+        print(f"[Worker] Indexed {product_id} from bytes")
         notify_laravel_callback(product_id, "INDEXED")
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
     except Exception as e:
-        # Task stays in queue for retry on next startup (up to MAX_RETRIES)
-        fail_task(task_id, str(e))
         notify_laravel_callback(product_id, "FAILED")
         print(f"[Worker] Failed {product_id}: {e}")
+        raise
 
 
 def process_from_url(product_id: str, image_url: str, metadata: dict):
-    """
-    Worker job: download image from URL, generate embedding, store in Qdrant.
-
-    Downloads the image to a temp file for persistence/recovery.
-    """
-    # 1. Write task to persistent queue
-    task_id = enqueue_task("embed_url", product_id, image_url=image_url, metadata=metadata)
-
+    """Download image from URL, embed, store in Neon."""
     try:
-        # 2. Download image
         print(f"[Worker] Downloading image for {product_id} from {image_url}...")
         response = httpx.get(image_url, timeout=30.0, follow_redirects=True)
         response.raise_for_status()
-        image_bytes = response.content
-
-        # Save to temp file for crash recovery (so we don't redownload on retry if we got this far)
-        temp_dir = os.path.join("task_queue", "uploads")
-        os.makedirs(temp_dir, exist_ok=True)
-        temp_path = os.path.join(temp_dir, f"url_{product_id}.jpg")
-        with open(temp_path, "wb") as f:
-            f.write(image_bytes)
-
-        # 3. Generate embedding
-        embedding = generate_embedding_from_bytes(image_bytes)
-        upsert_embedding(str(product_id), embedding, metadata)
+        embedding = generate_embedding_from_bytes(response.content)
+        _index(product_id, embedding, metadata, image_url=image_url)
         print(f"[Worker] Indexed {product_id} from URL {image_url}")
-
-        # 4. Mark task as done and clean up
-        complete_task(task_id)
         notify_laravel_callback(product_id, "INDEXED")
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
     except Exception as e:
-        fail_task(task_id, str(e))
         notify_laravel_callback(product_id, "FAILED")
         print(f"[Worker] Failed {product_id} from URL: {e}")
+        raise
+
+
+def process_task(task: dict):
+    """
+    Process one SQS task payload.
+
+    Supported sources (priority):
+    - image_url / http image_path
+    - s3_key (+ S3_BUCKET)
+    - image_b64 (small payloads)
+    - local image_path
+    """
+    product_id = str(task["product_id"])
+    metadata = task.get("metadata") or {}
+    image_url = task.get("image_url")
+    image_path = task.get("image_path")
+    s3_key = task.get("s3_key")
+    image_b64 = task.get("image_b64")
+
+    if image_url or (image_path and str(image_path).startswith(("http://", "https://"))):
+        url = image_url or image_path
+        process_from_url(product_id, url, metadata)
+        return
+
+    if s3_key:
+        image_bytes = sqs_queue.download_s3_bytes(s3_key)
+        process_from_bytes(product_id, image_bytes, metadata)
+        return
+
+    if image_b64:
+        image_bytes = base64.b64decode(image_b64)
+        process_from_bytes(product_id, image_bytes, metadata)
+        return
+
+    if image_path and os.path.exists(image_path):
+        process_from_path(product_id, image_path, metadata)
+        return
+
+    raise ValueError(f"No valid image source for product {product_id}")
 
 
 def retry_pending_tasks():
     """
-    Called on server startup to retry any tasks that were
-    interrupted by a crash or shutdown.
+    Local file-queue recovery stub.
+
+    On Lambda, SQS / DLQ handles retries — no startup redrive needed.
     """
-    from app.services.task_queue import get_pending_tasks
-
-    pending = get_pending_tasks()
-    if not pending:
-        print("[Recovery] No pending tasks found. Queue is clean.")
+    if sqs_queue.is_sqs_enabled():
+        print("[Recovery] SQS enabled — skipping local file-queue recovery")
         return
-
-    print(f"[Recovery] Found {len(pending)} pending tasks. Retrying...")
-
-    for task in pending:
-        task_id = task["task_id"]
-        product_id = task["product_id"]
-        task_type = task.get("task_type", "embed_path")
-        image_path = task.get("image_path")
-        image_url = task.get("image_url")
-        metadata = task.get("metadata", {})
-        retries = task.get("retries", 0)
-
-        print(f"[Recovery] Retrying {product_id} ({task_type}, attempt {retries + 1}/3)")
-
-        try:
-            if task_type == "embed_url" and image_url:
-                # If it's a URL, we try to redownload (unless it was already saved to image_path)
-                if image_path and os.path.exists(image_path):
-                    embedding = generate_embedding_from_path(image_path)
-                else:
-                    response = httpx.get(image_url, timeout=30.0, follow_redirects=True)
-                    response.raise_for_status()
-                    embedding = generate_embedding_from_bytes(response.content)
-            
-            elif image_path and os.path.exists(image_path):
-                embedding = generate_embedding_from_path(image_path)
-            
-            else:
-                print(f"[Recovery] Skipping {task_id}: no valid source found")
-                fail_task(task_id, "No valid image source found during recovery")
-                continue
-
-            upsert_embedding(str(product_id), embedding, metadata)
-            complete_task(task_id)
-            notify_laravel_callback(product_id, "INDEXED")
-            print(f"[Recovery] Successfully recovered {product_id}")
-
-            # Clean up temp uploads
-            if image_path and "uploads" in image_path and os.path.exists(image_path):
-                os.remove(image_path)
-
-        except Exception as e:
-            fail_task(task_id, str(e))
-            notify_laravel_callback(product_id, "FAILED")
-            print(f"[Recovery] Failed to recover {product_id}: {e}")
+    print("[Recovery] No local pending-task recovery on Neon/SQS stack")

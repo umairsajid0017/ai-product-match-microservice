@@ -25,3 +25,8 @@ orig_images/
 test_qdrant_data/
 task_queue/
 .env
+
+params.env
+infra/params.env
+.aws-sam/
+

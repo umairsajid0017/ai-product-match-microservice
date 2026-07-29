@@ -1,12 +1,10 @@
 """
 Singleton CLIP model loader.
 
-The CLIP model is ~350 MB. It is loaded ONCE on startup and reused
-for all subsequent requests. Never instantiate per-request.
+The CLIP model is ~350 MB. It is loaded ONCE on first use and reused.
+open_clip is imported lazily so light API Lambdas can avoid the cold-start hit.
 """
 
-import open_clip
-import torch
 from app.config import settings
 
 _model = None
@@ -22,6 +20,9 @@ def get_model():
     global _model, _preprocess, _tokenizer
 
     if _model is None:
+        import open_clip
+        import torch
+
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         _model, _, _preprocess = open_clip.create_model_and_transforms(
@@ -30,8 +31,12 @@ def get_model():
             device=device,
         )
 
-        _model.eval()  # inference-only mode — saves memory
-        _tokenizer = open_clip.get_tokenizer(settings.clip_model_name)
+        _model.eval()
+        try:
+            _tokenizer = open_clip.get_tokenizer(settings.clip_model_name)
+        except Exception as e:
+            print(f"CLIP tokenizer unavailable (image-only mode): {e}")
+            _tokenizer = None
 
         print(f"CLIP model loaded on {device}")
 

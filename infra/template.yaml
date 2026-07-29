@@ -1,0 +1,305 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Everystore product-match — Lambda + API Gateway + SQS + Neon pgvector
+
+Parameters:
+  InternalApiKeyParam:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /everystore/product-match/internal-api-key
+    Description: SSM SecureString/String with X-Internal-API-Key
+
+  DatabaseUrlParam:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /everystore/product-match/database-url
+    Description: SSM SecureString with Neon DATABASE_URL
+
+  LaravelCallbackUrl:
+    Type: String
+    Default: https://backend.everystore.pk/api/internal/ai-matching/callback
+
+  SimilarityThreshold:
+    Type: String
+    Default: '0.70'
+
+  DefaultTopK:
+    Type: String
+    Default: '10'
+
+Globals:
+  Function:
+    Architectures:
+      - x86_64
+
+Resources:
+  StagingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireEmbedUploads
+            Status: Enabled
+            Prefix: embed-uploads/
+            ExpirationInDays: 3
+
+  EmbedDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-embed-dlq'
+      MessageRetentionPeriod: 1209600
+
+  EmbedQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-embed'
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt EmbedDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  ProductMatchFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ProductMatchAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                  - sqs:PurgeQueue
+                Resource:
+                  - !GetAtt EmbedQueue.Arn
+                  - !GetAtt EmbedDeadLetterQueue.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: !Sub '${StagingBucket.Arn}/embed-uploads/*'
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ..
+      DockerTag: product-match-latest
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-api'
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - app.lambda_handler.api_handler
+      Role: !GetAtt ProductMatchFunctionRole.Arn
+      Timeout: 60
+      MemorySize: 1024
+      EphemeralStorage:
+        Size: 512
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref EmbedQueue
+          SQS_DLQ_URL: !Ref EmbedDeadLetterQueue
+          S3_BUCKET: !Ref StagingBucket
+          DATABASE_URL: !Ref DatabaseUrlParam
+          INTERNAL_API_KEY: !Ref InternalApiKeyParam
+          LARAVEL_CALLBACK_URL: !Ref LaravelCallbackUrl
+          SIMILARITY_THRESHOLD: !Ref SimilarityThreshold
+          DEFAULT_TOP_K: !Ref DefaultTopK
+          CLIP_MODEL_NAME: ViT-B-32
+          CLIP_PRETRAINED: openai
+          HOME: /tmp
+          TORCH_HOME: /opt/ml/torch
+          OPEN_CLIP_CACHE_DIR: /opt/ml/open_clip
+          HF_HOME: /tmp/hf
+          XDG_CACHE_HOME: /tmp
+      Events:
+        Health:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /health
+            Method: GET
+        EmbedPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /products/embedding
+            Method: POST
+        EmbedDelete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /products/embedding/{product_id}
+            Method: DELETE
+        ReindexPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /products/reindex
+            Method: POST
+        ReindexStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /products/reindex/status
+            Method: GET
+        QueueStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /queue/status
+            Method: GET
+        DeadLettersGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /queue/dead-letters
+            Method: GET
+        DeadLettersDelete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /queue/dead-letters
+            Method: DELETE
+
+  SearchFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ..
+      DockerTag: product-match-latest
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-search'
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - app.lambda_handler.handler
+      Role: !GetAtt ProductMatchFunctionRole.Arn
+      Timeout: 120
+      MemorySize: 3008
+      EphemeralStorage:
+        Size: 2048
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref EmbedQueue
+          SQS_DLQ_URL: !Ref EmbedDeadLetterQueue
+          S3_BUCKET: !Ref StagingBucket
+          DATABASE_URL: !Ref DatabaseUrlParam
+          INTERNAL_API_KEY: !Ref InternalApiKeyParam
+          LARAVEL_CALLBACK_URL: !Ref LaravelCallbackUrl
+          SIMILARITY_THRESHOLD: !Ref SimilarityThreshold
+          DEFAULT_TOP_K: !Ref DefaultTopK
+          CLIP_MODEL_NAME: ViT-B-32
+          CLIP_PRETRAINED: openai
+          HOME: /tmp
+          TORCH_HOME: /opt/ml/torch
+          OPEN_CLIP_CACHE_DIR: /opt/ml/open_clip
+          HF_HOME: /tmp/hf
+          XDG_CACHE_HOME: /tmp
+      Events:
+        SearchSimilar:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /products/search-similar
+            Method: POST
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ..
+      DockerTag: product-match-latest
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-worker'
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - app.lambda_handler.worker_handler
+      Role: !GetAtt ProductMatchFunctionRole.Arn
+      Timeout: 120
+      MemorySize: 3008
+      EphemeralStorage:
+        Size: 2048
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref EmbedQueue
+          SQS_DLQ_URL: !Ref EmbedDeadLetterQueue
+          S3_BUCKET: !Ref StagingBucket
+          DATABASE_URL: !Ref DatabaseUrlParam
+          INTERNAL_API_KEY: !Ref InternalApiKeyParam
+          LARAVEL_CALLBACK_URL: !Ref LaravelCallbackUrl
+          SIMILARITY_THRESHOLD: !Ref SimilarityThreshold
+          DEFAULT_TOP_K: !Ref DefaultTopK
+          CLIP_MODEL_NAME: ViT-B-32
+          CLIP_PRETRAINED: openai
+          HOME: /tmp
+          TORCH_HOME: /opt/ml/torch
+          OPEN_CLIP_CACHE_DIR: /opt/ml/open_clip
+          HF_HOME: /tmp/hf
+          XDG_CACHE_HOME: /tmp
+      Events:
+        EmbedQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt EmbedQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowHeaders:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - DELETE
+          - OPTIONS
+
+Outputs:
+  ApiUrl:
+    Description: Public product-match API base URL (set as PRODUCT_MATCH_URL)
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com'
+  HttpApiId:
+    Value: !Ref HttpApi
+  EmbedQueueUrl:
+    Value: !Ref EmbedQueue
+  EmbedDlqUrl:
+    Value: !Ref EmbedDeadLetterQueue
+  StagingBucketName:
+    Value: !Ref StagingBucket
+  SearchFunctionName:
+    Value: !Ref SearchFunction
+  ApiFunctionName:
+    Value: !Ref ApiFunction
+  WorkerFunctionName:
+    Value: !Ref WorkerFunction
