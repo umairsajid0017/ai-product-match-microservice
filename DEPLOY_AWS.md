@@ -152,6 +152,7 @@ Do **not** rely on `qdrant_data/` or file `task_queue/` for production — those
 
 - [ ] **Custom domain** — point `productsmatch.everystore.pk` (ACM + API Gateway) instead of raw `execute-api` URL
 - [ ] **Dedicated Neon database** — today vectors may share the main Neon DB; prefer `everystore_product_match` (or schema `ai_match`) for isolation
+- [ ] **Recreate `product_embeddings` after Prisma push** — model is in `backend/prisma/schema.prisma`; after `prisma db push` run `backend/prisma/sql/product_embeddings_hnsw.sql` (extension + HNSW). Then reindex products from Admin AI Matching.
 - [ ] **SSM SecureString** — parameters are String today; rotate to SecureString + IAM tighten
 - [ ] **Provisioned concurrency** on Search Lambda if cold starts hurt UX
 - [ ] **Backfill** — reindex all historical products from Admin / script (not only newly touched ones)
