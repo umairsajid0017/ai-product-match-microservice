@@ -38,7 +38,7 @@ async def create_embedding(
 @router.post("/products/search-similar", response_model=SearchResponse, tags=["Products"])
 async def search_by_image(
     image_file: UploadFile = File(...),
-    top_k: int = Form(settings.default_top_k),
+    top_k: int = Form(settings.default_top_k, ge=1, le=50),
 ):
     """Search for visually similar products."""
     return await product_controller.search_by_image(image_file, top_k)

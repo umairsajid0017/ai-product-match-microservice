@@ -5,12 +5,14 @@ Requires Redis to be running for the queue.
 Run with: pytest tests/test_embedding.py -v
 """
 
+import os
+
 from fastapi.testclient import TestClient
 from app.main import app
 
 client = TestClient(app)
 
-HEADERS = {"X-Internal-API-Key": "change-me-to-a-strong-secret"}
+HEADERS = {"X-Internal-API-Key": os.environ["INTERNAL_API_KEY"]}
 
 
 def test_embedding_requires_image():

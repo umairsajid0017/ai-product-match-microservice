@@ -25,6 +25,11 @@ Parameters:
     Type: String
     Default: '10'
 
+  AllowedImageHosts:
+    Type: String
+    Default: cdn.everystore.pk
+    Description: Comma-separated HTTPS host allowlist for URL image ingestion
+
 Globals:
   Function:
     Architectures:
@@ -128,6 +133,7 @@ Resources:
           LARAVEL_CALLBACK_URL: !Ref LaravelCallbackUrl
           SIMILARITY_THRESHOLD: !Ref SimilarityThreshold
           DEFAULT_TOP_K: !Ref DefaultTopK
+          ALLOWED_IMAGE_HOSTS: !Ref AllowedImageHosts
           CLIP_MODEL_NAME: ViT-B-32
           CLIP_PRETRAINED: openai
           HOME: /tmp
@@ -212,6 +218,7 @@ Resources:
           LARAVEL_CALLBACK_URL: !Ref LaravelCallbackUrl
           SIMILARITY_THRESHOLD: !Ref SimilarityThreshold
           DEFAULT_TOP_K: !Ref DefaultTopK
+          ALLOWED_IMAGE_HOSTS: !Ref AllowedImageHosts
           CLIP_MODEL_NAME: ViT-B-32
           CLIP_PRETRAINED: openai
           HOME: /tmp
@@ -254,6 +261,7 @@ Resources:
           LARAVEL_CALLBACK_URL: !Ref LaravelCallbackUrl
           SIMILARITY_THRESHOLD: !Ref SimilarityThreshold
           DEFAULT_TOP_K: !Ref DefaultTopK
+          ALLOWED_IMAGE_HOSTS: !Ref AllowedImageHosts
           CLIP_MODEL_NAME: ViT-B-32
           CLIP_PRETRAINED: openai
           HOME: /tmp

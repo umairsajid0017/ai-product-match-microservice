@@ -18,6 +18,7 @@ from app.services.embedding_service import (
     generate_embedding_from_path,
 )
 from app.services.pgvector_service import upsert_embedding
+from app.services.url_fetcher import fetch_image_bytes
 from app.services import sqs_queue
 
 
@@ -93,9 +94,8 @@ def process_from_url(product_id: str, image_url: str, metadata: dict):
     """Download image from URL, embed, store in Neon."""
     try:
         print(f"[Worker] Downloading image for {product_id} from {image_url}...")
-        response = httpx.get(image_url, timeout=30.0, follow_redirects=True)
-        response.raise_for_status()
-        embedding = generate_embedding_from_bytes(response.content)
+        image_bytes = fetch_image_bytes(image_url)
+        embedding = generate_embedding_from_bytes(image_bytes)
         _index(product_id, embedding, metadata, image_url=image_url)
         print(f"[Worker] Indexed {product_id} from URL {image_url}")
         notify_laravel_callback(product_id, "INDEXED")

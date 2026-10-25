@@ -11,8 +11,11 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 
-from app.config import settings
+from app.config import settings, validate_runtime_security
 from app.middleware.auth import InternalAPIKeyMiddleware
+
+# Refuse to start without service authentication.
+validate_runtime_security()
 
 api_key_header = APIKeyHeader(name="X-Internal-API-Key", auto_error=False)
 

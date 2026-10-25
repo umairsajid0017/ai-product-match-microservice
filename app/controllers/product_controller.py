@@ -11,8 +11,25 @@ from fastapi import UploadFile, HTTPException, BackgroundTasks
 from app.config import settings
 from app.services.image_service import validate_image_bytes, validate_image_path
 from app.services.pgvector_service import search_similar, delete_embedding
+from app.services.url_fetcher import validate_image_url
 from app.services import sqs_queue
 from app.schemas.requests import EmbeddingResponse, SearchResponse, DeleteResponse
+
+
+def resolve_local_image_path(image_path: str) -> str:
+    """Resolve image_path inside the configured base directory, rejecting escapes."""
+    base = os.path.realpath(settings.image_base_path)
+    candidate = os.path.realpath(os.path.join(base, image_path))
+
+    try:
+        inside = os.path.commonpath([base, candidate]) == base
+    except ValueError:
+        inside = False
+
+    if not inside:
+        raise HTTPException(400, "Invalid image path.")
+
+    return candidate
 
 
 async def create_embedding(
@@ -62,6 +79,11 @@ async def create_embedding(
 
     elif image_path:
         if image_path.startswith(("http://", "https://")):
+            try:
+                validate_image_url(image_path)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+
             if use_sqs:
                 try:
                     sqs_queue.enqueue_task(
@@ -82,7 +104,7 @@ async def create_embedding(
                     meta,
                 )
         else:
-            full_path = os.path.join(settings.image_base_path, image_path)
+            full_path = resolve_local_image_path(image_path)
 
             try:
                 validate_image_path(full_path)

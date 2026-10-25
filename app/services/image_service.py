@@ -10,9 +10,23 @@ import io
 import os
 from PIL import Image
 
+from app.config import settings
+
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def _check_pixel_budget(source) -> None:
+    """Reject decompression bombs before inference runs."""
+    with Image.open(source) as img:
+        width, height = img.size
+
+    if width * height > settings.max_image_pixels:
+        raise ValueError(
+            f"Image dimensions are too large: {width}x{height} "
+            f"(max {settings.max_image_pixels} pixels)"
+        )
 
 
 def validate_image_bytes(image_bytes: bytes, content_type: str | None = None):
@@ -34,6 +48,9 @@ def validate_image_bytes(image_bytes: bytes, content_type: str | None = None):
     try:
         img = Image.open(io.BytesIO(image_bytes))
         img.verify()
+        _check_pixel_budget(io.BytesIO(image_bytes))
+    except ValueError:
+        raise
     except Exception as e:
         raise ValueError(f"Corrupt image data: {e}")
 
@@ -65,5 +82,8 @@ def validate_image_path(image_path: str):
     try:
         img = Image.open(image_path)
         img.verify()
+        _check_pixel_budget(image_path)
+    except ValueError:
+        raise
     except Exception as e:
         raise ValueError(f"Corrupt image file: {e}")

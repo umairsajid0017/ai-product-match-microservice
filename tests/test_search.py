@@ -5,12 +5,14 @@ Requires Qdrant and Redis to be running.
 Run with: pytest tests/test_search.py -v
 """
 
+import os
+
 from fastapi.testclient import TestClient
 from app.main import app
 
 client = TestClient(app)
 
-HEADERS = {"X-Internal-API-Key": "change-me-to-a-strong-secret"}
+HEADERS = {"X-Internal-API-Key": os.environ["INTERNAL_API_KEY"]}
 
 
 def test_health():
