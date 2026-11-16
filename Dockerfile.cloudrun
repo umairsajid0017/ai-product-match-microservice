@@ -1,0 +1,33 @@
+# Cloud Run container image for Everystore product-match (CPU OpenCLIP + FastAPI)
+
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir --only-binary=:all: "numpy==1.26.4" "Pillow==10.4.0" \
+    && pip install --no-cache-dir \
+         torch==2.4.1 torchvision==0.19.1 \
+         --extra-index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --no-deps "open-clip-torch==2.24.0"
+
+ENV TORCH_HOME=/opt/ml/torch
+ENV OPEN_CLIP_CACHE_DIR=/opt/ml/open_clip
+ENV HF_HOME=/opt/ml/hf
+RUN mkdir -p /opt/ml/torch /opt/ml/open_clip /opt/ml/hf \
+    && python -c "import open_clip; print('Downloading ViT-B-32 openai weights...'); model, _, _ = open_clip.create_model_and_transforms('ViT-B-32', pretrained='openai', device='cpu'); model.eval(); print('CLIP weights cached.')"
+
+COPY app ./app
+COPY sql ./sql
+
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+
