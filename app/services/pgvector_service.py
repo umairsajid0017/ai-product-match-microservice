@@ -135,7 +135,7 @@ def upsert_embedding(
             )
 
 
-def search_similar(embedding: list[float], top_k: int = 10) -> list[dict]:
+def search_similar(embedding: list[float], top_k: int = 10, product_ids: list[str] | None = None) -> list[dict]:
     """
     Cosine similarity search.
 
@@ -145,6 +145,8 @@ def search_similar(embedding: list[float], top_k: int = 10) -> list[dict]:
         raise ValueError(f"Expected {VECTOR_SIZE}-d embedding, got {len(embedding)}")
 
     threshold = settings.similarity_threshold
+    if product_ids == []:
+        return []
 
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -156,10 +158,11 @@ def search_similar(embedding: list[float], top_k: int = 10) -> list[dict]:
                     1 - (embedding <=> %s::vector) AS score
                 FROM product_embeddings
                 WHERE 1 - (embedding <=> %s::vector) >= %s
+                  AND (%s::text[] IS NULL OR product_id = ANY(%s::text[]))
                 ORDER BY embedding <=> %s::vector
                 LIMIT %s
                 """,
-                (embedding, embedding, threshold, embedding, top_k),
+                (embedding, embedding, threshold, product_ids, product_ids, embedding, top_k),
             )
             rows = cur.fetchall()
 

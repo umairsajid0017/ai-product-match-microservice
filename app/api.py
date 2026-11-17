@@ -39,9 +39,10 @@ async def create_embedding(
 async def search_by_image(
     image_file: UploadFile = File(...),
     top_k: int = Form(settings.default_top_k, ge=1, le=50),
+    product_ids: str | None = Form(None, max_length=250000),
 ):
     """Search for visually similar products."""
-    return await product_controller.search_by_image(image_file, top_k)
+    return await product_controller.search_by_image(image_file, top_k, product_ids)
 
 
 @router.delete("/products/embedding/{product_id}", response_model=DeleteResponse, tags=["Products"])

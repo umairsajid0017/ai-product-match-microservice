@@ -130,8 +130,21 @@ async def create_embedding(
     )
 
 
-async def search_by_image(image_file: UploadFile, top_k: int):
+async def search_by_image(image_file: UploadFile, top_k: int, product_ids: str | None = None):
     """Business logic for similarity search."""
+
+    allowed_ids = None
+    if product_ids is not None:
+        try:
+            allowed_ids = json.loads(product_ids)
+        except (ValueError, TypeError):
+            raise HTTPException(422, "product_ids must be a JSON array.")
+        if not isinstance(allowed_ids, list) or len(allowed_ids) > 10000 or any(
+            not isinstance(value, str) or not value.isascii() or not value.isdigit() or len(value) > 20
+            for value in allowed_ids
+        ):
+            raise HTTPException(422, "product_ids must contain up to 10000 numeric strings.")
+
     from app.services.embedding_service import generate_embedding_from_bytes
 
     image_bytes = await image_file.read()
@@ -141,7 +154,7 @@ async def search_by_image(image_file: UploadFile, top_k: int):
         raise HTTPException(400, str(e))
 
     embedding = generate_embedding_from_bytes(image_bytes)
-    matches = search_similar(embedding, top_k=top_k)
+    matches = search_similar(embedding, top_k=top_k, product_ids=allowed_ids)
 
     return SearchResponse(matches=matches, count=len(matches))
 
